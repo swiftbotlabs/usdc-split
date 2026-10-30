@@ -54,6 +54,50 @@ export interface ScanResult {
   lastScanned: bigint
 }
 
+interface RpcLog {
+  address: string
+  topics: string[]
+  data: string
+  blockNumber: string | null
+  transactionHash: string | null
+  logIndex: string | null
+}
+
+/**
+ * Raw eth_getLogs so the node filters by topic. viem's getLogs ignores a raw `topics`
+ * field (it builds topics only from `event` + `args`), which would return every log.
+ */
+async function getLogsByTopics(
+  client: PublicClient,
+  filter: GetLogsArgs,
+  from: bigint,
+  to: bigint,
+): Promise<RawLog[]> {
+  const request = client.request as unknown as (a: {
+    method: string
+    params: unknown[]
+  }) => Promise<RpcLog[]>
+  const res = await request({
+    method: 'eth_getLogs',
+    params: [
+      {
+        address: filter.address,
+        topics: filter.topics,
+        fromBlock: `0x${from.toString(16)}`,
+        toBlock: `0x${to.toString(16)}`,
+      },
+    ],
+  })
+  return res.map((l) => ({
+    address: l.address,
+    topics: l.topics,
+    data: l.data,
+    blockNumber: l.blockNumber === null ? null : BigInt(l.blockNumber),
+    transactionHash: l.transactionHash,
+    logIndex: l.logIndex === null ? null : Number(BigInt(l.logIndex)),
+  }))
+}
+
 /**
  * Scan [fromBlock..toBlock] sequentially in 9k-block chunks. `filter` carries
  * address / topics / event / args for client.getLogs.
@@ -85,7 +129,9 @@ export async function scanLogsSequential(
     let backoff = BASE_BACKOFF_MS
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        chunk = (await getLogs({ ...filter, fromBlock: from, toBlock: to })) as RawLog[]
+        chunk = Array.isArray(filter.topics)
+          ? await getLogsByTopics(client, filter, from, to)
+          : ((await getLogs({ ...filter, fromBlock: from, toBlock: to })) as RawLog[])
         break
       } catch (e) {
         if (!isRateLimitError(e) || attempt === MAX_RETRIES - 1) {

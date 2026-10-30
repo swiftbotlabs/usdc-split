@@ -44,7 +44,7 @@ interface TimelineEvent {
   block: bigint; ts?: number; type: string; data: Record<string, string | bigint | number>
 }
 
-function decodeTimeline(logs: RawLog[]): TimelineEvent[] {
+function decodeTimeline(logs: RawLog[], splitId: bigint): TimelineEvent[] {
   const out: TimelineEvent[] = []
   for (const log of logs) {
     let decoded: { eventName: string; args: Record<string, unknown> } | null = null
@@ -56,6 +56,8 @@ function decodeTimeline(logs: RawLog[]): TimelineEvent[] {
       }) as unknown as { eventName: string; args: Record<string, unknown> }
     } catch { continue }
     if (!decoded || !TIMELINE_EVENTS.has(decoded.eventName)) continue
+    // Keep only this split's events, even if a node ignored the topic filter.
+    if (decoded.args?.id !== splitId) continue
     const data: Record<string, string | bigint | number> = {}
     if (decoded.args) {
       for (const [k, v] of Object.entries(decoded.args)) {
@@ -245,7 +247,7 @@ export function SplitPage({ id }: { id: string }) {
     if (tailStart === null) return
     // Cache is keyed by the snapshot/ranges it was built against, so changing either ignores it.
     const rangeSig = activity.map(([f, t]) => `${f}-${t}`).join(',')
-    const cacheKey = `split:${chainId}:${contractAddr.toLowerCase()}:${splitId.toString()}:${net.deploymentBlock}:${net.historySnapshotBlock ?? 'none'}:${rangeSig}`
+    const cacheKey = `split2:${chainId}:${contractAddr.toLowerCase()}:${splitId.toString()}:${net.deploymentBlock}:${net.historySnapshotBlock ?? 'none'}:${rangeSig}`
     const filter = { address: contractAddr, topics: [null, toHex(splitId, { size: 32 })] }
 
     try {
@@ -266,7 +268,7 @@ export function SplitPage({ id }: { id: string }) {
         for (const [from, to] of activity) {
           const res = await scanLogsSequential(client, from, to, filter)
           if (stale()) return
-          events = [...events, ...decodeTimeline(res.logs)]
+          events = [...events, ...decodeTimeline(res.logs, splitId)]
           setTimeline(sortTimelineDesc(events))
           if (!res.complete) {
             setTlError('rate-limited — some history is still loading')
@@ -285,7 +287,7 @@ export function SplitPage({ id }: { id: string }) {
       }
       const { logs, complete, lastScanned } = await scanLogsSequential(client, tailFrom, head, filter)
       if (stale()) return
-      events = [...events, ...decodeTimeline(logs)]
+      events = [...events, ...decodeTimeline(logs, splitId)]
       const merged = sortTimelineDesc(events)
       setTimeline(merged)
       // Only fully scanned tail blocks are recorded, so a cached entry never hides a range.
