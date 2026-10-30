@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAccount, useReadContract, useWriteContract, useWaitForTransactionReceipt, usePublicClient } from 'wagmi'
 import { parseGwei, toHex, decodeEventLog } from 'viem'
 import { ExternalLink, Copy, Check, AlertCircle, Clock, ArrowRight, Lock } from 'lucide-react'
@@ -9,7 +9,8 @@ import { USDC_SPLIT_ABI } from '../config/abi'
 import { Card, Btn, Badge, Spinner, Addr, ShareBar } from '../components/ui'
 import { formatUsdc, shortAddr, formatTs, formatCountdown } from '../utils/format'
 import { decodeContractError } from '../utils/errors'
-import { scanLogsSequential, readScanCache, writeScanCache } from '../utils/logscan'
+import { scanLogsSequential, readScanCache, writeScanCache, type RawLog } from '../utils/logscan'
+import { historyActivityRanges, historyTailStart } from '../utils/logs'
 import { sanitiseText } from '../utils/bidi'
 import { explorerTx } from '../config/networks'
 
@@ -41,6 +42,29 @@ interface RecipientRow {
 }
 interface TimelineEvent {
   block: bigint; ts?: number; type: string; data: Record<string, string | bigint | number>
+}
+
+function decodeTimeline(logs: RawLog[]): TimelineEvent[] {
+  const out: TimelineEvent[] = []
+  for (const log of logs) {
+    let decoded: { eventName: string; args: Record<string, unknown> } | null = null
+    try {
+      decoded = decodeEventLog({
+        abi: USDC_SPLIT_ABI,
+        data: log.data as `0x${string}`,
+        topics: log.topics as unknown as [`0x${string}`, ...`0x${string}`[]],
+      }) as unknown as { eventName: string; args: Record<string, unknown> }
+    } catch { continue }
+    if (!decoded || !TIMELINE_EVENTS.has(decoded.eventName)) continue
+    const data: Record<string, string | bigint | number> = {}
+    if (decoded.args) {
+      for (const [k, v] of Object.entries(decoded.args)) {
+        data[k] = v as string | bigint | number
+      }
+    }
+    out.push({ block: log.blockNumber ?? 0n, type: decoded.eventName, data })
+  }
+  return out
 }
 
 // ─── Recipient row component ──────────────────────────────────────────────────
@@ -203,70 +227,79 @@ export function SplitPage({ id }: { id: string }) {
   // ── Timeline ───────────────────────────────────────────────────────────────
   const [timeline, setTimeline] = useState<TimelineEvent[]>([])
   const [tlLoading, setTlLoading] = useState(false)
+  const [tlTail, setTlTail] = useState(false)
   const [tlError, setTlError] = useState('')
+  const tlRun = useRef(0)
 
   const fetchTimeline = useCallback(async () => {
     if (!client || !contractAddr || !net.deploymentBlock || !splitId) return
+    const run = ++tlRun.current
+    const stale = () => run !== tlRun.current
     setTlLoading(true)
+    setTlTail(false)
     setTlError('')
 
     const chainId = net.chain.id
-    const cacheKey = `split:${chainId}:${contractAddr.toLowerCase()}:${splitId.toString()}`
-    const idTopic = toHex(splitId, { size: 32 })
+    const activity = historyActivityRanges(net)
+    const tailStart = historyTailStart(net)
+    if (tailStart === null) return
+    // Cache is keyed by the snapshot/ranges it was built against, so changing either ignores it.
+    const rangeSig = activity.map(([f, t]) => `${f}-${t}`).join(',')
+    const cacheKey = `split:${chainId}:${contractAddr.toLowerCase()}:${splitId.toString()}:${net.deploymentBlock}:${net.historySnapshotBlock ?? 'none'}:${rangeSig}`
+    const filter = { address: contractAddr, topics: [null, toHex(splitId, { size: 32 })] }
 
     try {
-      const head = await client.getBlockNumber()
-
-      // Resume from cache: only scan the new tail since the last visit.
+      // A cache entry exists only once every activity range was read, and lastScanned is the
+      // last fully scanned tail block; it must reach the start of the tail to be trusted.
       const cached = readScanCache<TimelineEvent>(cacheKey)
-      const haveCache = !!cached && cached.lastScanned >= net.deploymentBlock - 1n
-      const existing: TimelineEvent[] = haveCache ? cached!.items : []
-      const fromBlock = haveCache ? cached!.lastScanned + 1n : net.deploymentBlock
+      const haveCache = !!cached && cached.lastScanned >= tailStart - 1n
+      let events: TimelineEvent[] = []
+      let tailFrom = tailStart
 
-      if (fromBlock > head) {
-        setTimeline(sortTimelineDesc(existing))
-        return
-      }
-
-      // ONE getLogs per 9k chunk for ALL event types of this split (topic1 = id),
-      // sequential with retry/backoff — ~9x fewer calls than the per-event scan.
-      const { logs, complete, lastScanned } = await scanLogsSequential(
-        client,
-        fromBlock,
-        head,
-        { address: contractAddr, topics: [null, idTopic] },
-      )
-
-      const fresh: TimelineEvent[] = []
-      for (const log of logs) {
-        let decoded: { eventName: string; args: Record<string, unknown> } | null = null
-        try {
-          decoded = decodeEventLog({
-            abi: USDC_SPLIT_ABI,
-            data: log.data as `0x${string}`,
-            topics: log.topics as unknown as [`0x${string}`, ...`0x${string}`[]],
-          }) as unknown as { eventName: string; args: Record<string, unknown> }
-        } catch { continue }
-        if (!decoded || !TIMELINE_EVENTS.has(decoded.eventName)) continue
-        const data: Record<string, string | bigint | number> = {}
-        if (decoded.args) {
-          for (const [k, v] of Object.entries(decoded.args)) {
-            data[k] = v as string | bigint | number
+      if (haveCache) {
+        events = cached.items
+        tailFrom = cached.lastScanned + 1n
+        setTimeline(sortTimelineDesc(events))
+      } else {
+        setTimeline([])
+        // Known-activity ranges first: show their events as soon as they are decoded.
+        for (const [from, to] of activity) {
+          const res = await scanLogsSequential(client, from, to, filter)
+          if (stale()) return
+          events = [...events, ...decodeTimeline(res.logs)]
+          setTimeline(sortTimelineDesc(events))
+          if (!res.complete) {
+            setTlError('rate-limited — some history is still loading')
+            return
           }
         }
-        fresh.push({ block: log.blockNumber ?? 0n, type: decoded.eventName, data })
       }
+      setTlLoading(false)
 
-      const merged = sortTimelineDesc([...existing, ...fresh])
+      setTlTail(true)
+      const head = await client.getBlockNumber()
+      if (stale()) return
+      if (tailFrom > head) {
+        writeScanCache(cacheKey, tailFrom - 1n, events)
+        return
+      }
+      const { logs, complete, lastScanned } = await scanLogsSequential(client, tailFrom, head, filter)
+      if (stale()) return
+      events = [...events, ...decodeTimeline(logs)]
+      const merged = sortTimelineDesc(events)
       setTimeline(merged)
+      // Only fully scanned tail blocks are recorded, so a cached entry never hides a range.
       writeScanCache(cacheKey, complete ? head : lastScanned, merged)
       if (!complete) setTlError('rate-limited — some history is still loading')
     } catch (e) {
-      setTlError(decodeContractError(e) || 'Failed to load timeline')
+      if (!stale()) setTlError(decodeContractError(e) || 'Failed to load timeline')
     } finally {
-      setTlLoading(false)
+      if (!stale()) {
+        setTlLoading(false)
+        setTlTail(false)
+      }
     }
-  }, [client, contractAddr, net.deploymentBlock, net.chain.id, splitId])
+  }, [client, contractAddr, net, splitId])
 
   useEffect(() => { if (idValid && contractAddr && splitId) fetchTimeline() }, [idValid, contractAddr, splitId?.toString()])
 
@@ -530,7 +563,10 @@ export function SplitPage({ id }: { id: string }) {
       {/* Timeline */}
       <Card>
         <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-          <h2 className="font-display font-semibold text-slate-800 dark:text-slate-200">Timeline</h2>
+          <div>
+            <h2 className="font-display font-semibold text-slate-800 dark:text-slate-200">Timeline</h2>
+            {tlTail && <p className="text-xs text-slate-400 mt-0.5">Checking newer blocks…</p>}
+          </div>
           <button onClick={fetchTimeline} className="text-xs text-accent-600 hover:underline">
             Refresh
           </button>
@@ -544,7 +580,7 @@ export function SplitPage({ id }: { id: string }) {
               <button onClick={fetchTimeline} className="underline ml-1">Retry</button>
             </div>
           )}
-          {!tlLoading && timeline.length === 0 && !tlError && (
+          {!tlLoading && !tlTail && timeline.length === 0 && !tlError && (
             <p className="text-sm text-slate-400 px-5 py-4">No events yet.</p>
           )}
           {timeline.map((ev, i) => (

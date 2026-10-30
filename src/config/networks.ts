@@ -15,6 +15,14 @@ export interface NetworkConfig {
   chain: Chain
   address: `0x${string}` | null
   deploymentBlock: bigint | null
+  /**
+   * Block up to which `activityRanges` is known to contain every log the contract
+   * emitted. History reads scan only those ranges plus the blocks after this one.
+   * null = no snapshot: scan from `deploymentBlock`.
+   */
+  historySnapshotBlock: bigint | null
+  /** Inclusive [from, to] block ranges holding every log up to `historySnapshotBlock`. */
+  activityRanges: [bigint, bigint][]
 }
 
 export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
@@ -22,11 +30,16 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     chain: arcTestnet,
     address: '0xcea442379f266e888277e5f29bc721ad3bb3f9a2',
     deploymentBlock: 68114243n,
+    historySnapshotBlock: null,
+    activityRanges: [],
   },
   mainnet: {
     chain: arcMainnet,
     address: '0x1ddb12d50b11a97106821896d0e70852fa8902e1', // MAINNET_PLACEHOLDER
     deploymentBlock: 26879353n,
+    // Verified by a full log scan of blocks 26879353..28663171: 29 logs, all in this range.
+    historySnapshotBlock: 28663171n,
+    activityRanges: [[26879450n, 26884750n]],
   },
 }
 

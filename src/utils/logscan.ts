@@ -108,7 +108,9 @@ export async function scanLogsSequential(
 }
 
 // --- localStorage cache (bigint-safe, fail-safe) ----------------------------------
-const CACHE_PREFIX = 'arc-logcache-v1:'
+// v2: entries hold decoded events plus the last fully scanned tail block (activity ranges are
+// always complete once an entry exists). v1 entries are never read.
+const CACHE_PREFIX = 'arc-logcache-v2:'
 
 function reviveBigint(_k: string, v: unknown): unknown {
   if (v && typeof v === 'object' && !Array.isArray(v) && '$bi' in (v as Record<string, unknown>)) {

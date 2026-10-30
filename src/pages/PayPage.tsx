@@ -9,7 +9,7 @@ import { USDC_SPLIT_ABI } from '../config/abi'
 import { Card, Btn, Input, Spinner, Badge } from '../components/ui'
 import { formatUsdc, parseUsdc, validateMemo, shortAddr } from '../utils/format'
 import { decodeContractError } from '../utils/errors'
-import { fetchLogsChunked } from '../utils/logs'
+import { fetchLogsRanges, historyRanges } from '../utils/logs'
 import { sanitiseText } from '../utils/bidi'
 import { explorerTx } from '../config/networks'
 
@@ -214,13 +214,11 @@ export function PayPage({
       const head = await client.getBlockNumber()
       const memoHash = keccak256(toBytes(checkMemo))
       const abiEvent = USDC_SPLIT_ABI.find(e => e.type === 'event' && 'name' in e && e.name === 'Paid')!
-      const logs = await fetchLogsChunked(client, {
+      const logs = await fetchLogsRanges(client, {
         address: contractAddr,
         event: abiEvent,
         args: { id: splitId, memoHash },
-        fromBlock: net.deploymentBlock,
-        toBlock: head,
-      })
+      }, historyRanges(net, head))
       const rows = logs.map(l => {
         const a = l.args as { payer: string; amount: bigint; version: number }
         return { payer: a.payer, amount: a.amount, version: a.version }

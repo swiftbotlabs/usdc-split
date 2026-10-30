@@ -8,6 +8,7 @@
  */
 import type { PublicClient, AbiEvent, Log } from 'viem'
 import { isRateLimitError } from './logscan'
+import type { NetworkConfig } from '../config/networks'
 
 const CHUNK = 9000n
 const INTER_CHUNK_DELAY_MS = 55
@@ -23,7 +24,7 @@ async function getLogsWithRetry(
   let delay = BASE_BACKOFF_MS
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      return (await client.getLogs(args)) as Log[]
+      return (await client.getLogs(args))
     } catch (e) {
       if (!isRateLimitError(e) || attempt === MAX_RETRIES - 1) throw e
       await sleep(delay + Math.floor(Math.random() * 200))
@@ -59,7 +60,7 @@ export async function fetchLogsChunked(
       ...(params.args ? { args: params.args } : {}),
       fromBlock: from,
       toBlock: to,
-    } as Parameters<PublicClient['getLogs']>[0])
+    })
     for (const log of chunk) {
       results.push({
         ...log,
@@ -69,6 +70,46 @@ export async function fetchLogsChunked(
     }
     from = to + 1n
     if (from <= toBlock) await sleep(INTER_CHUNK_DELAY_MS)
+  }
+  return results
+}
+
+export type BlockRange = [bigint, bigint]
+
+/** Known-activity ranges for a network (empty when it has no snapshot). */
+export function historyActivityRanges(net: NetworkConfig): BlockRange[] {
+  return net.historySnapshotBlock !== null ? net.activityRanges : []
+}
+
+/** First block after the activity ranges: snapshot + 1, or the deployment block with no snapshot. */
+export function historyTailStart(net: NetworkConfig): bigint | null {
+  return net.historySnapshotBlock !== null ? net.historySnapshotBlock + 1n : net.deploymentBlock
+}
+
+/**
+ * Block ranges to read for event history: the known activity ranges followed by the
+ * tail [snapshot + 1, head]; with no snapshot, just [deploymentBlock, head].
+ */
+export function historyRanges(net: NetworkConfig, head: bigint): BlockRange[] {
+  const ranges: BlockRange[] = [...historyActivityRanges(net)]
+  const tail = historyTailStart(net)
+  if (tail !== null && tail <= head) ranges.push([tail, head])
+  return ranges
+}
+
+/** fetchLogsChunked over several ranges, strictly one request at a time. */
+export async function fetchLogsRanges(
+  client: PublicClient,
+  params: {
+    address: `0x${string}`
+    event: AbiEvent
+    args?: Record<string, unknown>
+  },
+  ranges: BlockRange[],
+): Promise<LogEntry[]> {
+  const results: LogEntry[] = []
+  for (const [fromBlock, toBlock] of ranges) {
+    results.push(...(await fetchLogsChunked(client, { ...params, fromBlock, toBlock })))
   }
   return results
 }

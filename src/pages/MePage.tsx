@@ -8,7 +8,7 @@ import { USDC_SPLIT_ABI } from '../config/abi'
 import { Card, Btn, Spinner } from '../components/ui'
 import { formatUsdc } from '../utils/format'
 import { decodeContractError } from '../utils/errors'
-import { fetchLogsChunked } from '../utils/logs'
+import { fetchLogsRanges, historyRanges } from '../utils/logs'
 
 
 const PAGE_SIZE = 20
@@ -146,13 +146,11 @@ export function MePage() {
     try {
       const head = await client.getBlockNumber()
       const creditedAbi = USDC_SPLIT_ABI.find(e => e.type === 'event' && 'name' in e && e.name === 'Credited')!
-      const logs = await fetchLogsChunked(client, {
+      const logs = await fetchLogsRanges(client, {
         address: contractAddr,
         event: creditedAbi,
         args: { account: walletAddr },
-        fromBlock: net.deploymentBlock,
-        toBlock: head,
-      })
+      }, historyRanges(net, head))
       const events: IncomeEvent[] = logs.map(l => {
         const a = l.args as { id: bigint; paymentNo: bigint; amount: bigint }
         return { splitId: a.id, paymentNo: a.paymentNo, amount: a.amount, block: l.blockNumber ?? 0n }
@@ -166,7 +164,7 @@ export function MePage() {
     } finally {
       setIncomeLoading(false)
     }
-  }, [client, contractAddr, net.deploymentBlock, walletAddr])
+  }, [client, contractAddr, net, walletAddr])
 
   const deploymentBlockStr = net.deploymentBlock?.toString() ?? ''
   useEffect(() => {
