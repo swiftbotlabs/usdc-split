@@ -68,7 +68,13 @@ with nothing held.
   small app fixes after our end-to-end test (no Studio budget left for a fix turn): the production CSP now allows inline
   styles + Google Fonts (`vite.config.ts`; the strict `style-src 'self'` stopped connectkit's styled-components from
   rendering), and `src/utils/logs.ts` passes the indexed-topic filter to `getLogs` again (one line, dropped during Studio's
-  lint refactor). The contract and tests are exactly as Studio wrote them.
+  lint refactor), plus a sequential, rate-limit-safe log scanner for the Timeline (`src/utils/logscan.ts`, Oct 21). The
+  contract and tests are exactly as Studio wrote them.
+- **Fix turns (Oct 30, p5 and p5b):** we uploaded the live versions of the files we had changed, and Studio changed every
+  history view (Timeline, Check a reference, Me income) to read only the contract's known activity range
+  (`activityRanges` in `src/config/networks.ts`, verified with a full log scan up to block 28663171) plus the newer blocks,
+  instead of ~200 requests from the deployment block. A second turn fixed the Timeline listing other splits' events
+  (viem's `getLogs` ignores a raw `topics` field; the scanner now sends a raw `eth_getLogs` and checks the split id).
 
 ## Run locally
 ```
