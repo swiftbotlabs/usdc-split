@@ -2,8 +2,8 @@
 
 Split incoming USDC between your team on Arc: every payment is divided the moment it lands.
 
-**Live app:** https://swiftbotlab.github.io/usdc-split/ (Arc mainnet by default; Arc Testnet in the header toggle)
-**Video (2:06):** https://github.com/swiftbotlab/usdc-split/releases/download/v1.0.0/usdc-split-arc-studio-mainnet.mp4
+**Live app:** https://apps.swiftbotlab.workers.dev/usdc-split/ (Arc mainnet by default; Arc Testnet in the header toggle)
+**Video (2:06):** https://github.com/swiftbotlabs/usdc-split/releases/download/v1.0.0/usdc-split-arc-studio-mainnet.mp4
 **Built with Arc Studio:** https://studio.arc.io/app/252c6ded-95ab-41e8-b3da-6a411667d1d8 · by Swift Bot Labs
 
 ## What it does
